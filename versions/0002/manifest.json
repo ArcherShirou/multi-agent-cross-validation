@@ -1,0 +1,10 @@
+{
+  "round": 2,
+  "from": "0001",
+  "promoted": true,
+  "target": "agent",
+  "train_before": 0.5,
+  "train_after": 1.0,
+  "holdout_before": 0.0,
+  "holdout_after": 1.0
+}

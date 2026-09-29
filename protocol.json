@@ -1,0 +1,11 @@
+{
+  "train": "examples/train.jsonl",
+  "holdout": "examples/holdout.jsonl",
+  "calibration": "examples/calibration.jsonl",
+  "timeout_seconds": 10,
+  "actors": [
+    {"id": "alpha", "command": ["python3", "examples/mock_agent.py"]},
+    {"id": "beta", "command": ["python3", "examples/mock_agent.py"]},
+    {"id": "gamma", "command": ["python3", "examples/mock_agent.py"]}
+  ]
+}

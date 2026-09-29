@@ -1,0 +1,2 @@
+{"id":"recovery-1","input":"Help me recover my account.","rubric":{"required_terms":["Verify identity"]}}
+{"id":"recovery-2","input":"I forgot my password.","rubric":{"required_terms":["reset link"]}}
