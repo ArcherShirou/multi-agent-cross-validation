@@ -1,6 +1,6 @@
 {
   "train": "examples/train.jsonl",
-  "holdout": "examples/holdout.jsonl",
+  "validation": "examples/validation.jsonl",
   "calibration": "examples/calibration.jsonl",
   "timeout_seconds": 10,
   "actors": [

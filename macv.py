@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -81,9 +82,21 @@ def review_one(reviewer: dict, case: dict, output: str, cwd: Path, timeout: int)
         raise ValueError("Reviewer returned an unknown claimed action")
     if actions and "claimed_actions" not in judged:
         raise ValueError("Reviewer must report claimed_actions when rubric defines actions")
-    successful = {event["name"] for event in evidence.get("tool_results", [])
-                  if event.get("status") == "success"}
-    unsupported = sorted(set(claims) - successful)
+    unsupported = []
+    for claim in set(claims):
+        expected = actions[claim]
+        if not isinstance(expected, dict) or not all(expected.get(key) for key in ("name", "subject", "target")):
+            raise ValueError(f"Action {claim} needs name, subject, and target")
+        run_id = evidence.get("run_id")
+        matched = isinstance(run_id, str) and bool(run_id) and any(
+            isinstance(event, dict) and event.get("status") == "success"
+            and isinstance(event.get("call_id"), str) and bool(event["call_id"])
+            and event.get("run_id") == run_id
+            and all(event.get(key) == expected[key] for key in ("name", "subject", "target"))
+            for event in evidence.get("tool_results", []))
+        if not matched:
+            unsupported.append(claim)
+    unsupported.sort()
     reasons = [judged["reason"]] if status != "pass" else []
     reasons += [f"unsupported completed-action claim: {action}" for action in unsupported]
     if unsupported:
@@ -159,9 +172,9 @@ def run(root: Path, rounds: int) -> list[dict]:
     if timeout < 1 or timeout > 300 or rounds < 1:
         raise ValueError("Timeout must be 1–300 seconds and rounds must be positive")
     train = load_cases(root / config["train"])
-    holdout = load_cases(root / config["holdout"])
-    if {case["id"] for case in train} & {case["id"] for case in holdout}:
-        raise ValueError("Train and holdout case IDs must be disjoint")
+    validation = load_cases(root / config["validation"])
+    if {case["id"] for case in train} & {case["id"] for case in validation}:
+        raise ValueError("Train and validation case IDs must be disjoint")
     if config.get("calibration"):
         calibrate(actors, load_cases(root / config["calibration"]), root, timeout)
     current = read_json(root / "current.json")["version"]
@@ -171,7 +184,7 @@ def run(root: Path, rounds: int) -> list[dict]:
         skill = (version_dir / "skill.md").read_text(encoding="utf-8")
         agent = (version_dir / "agent.md").read_text(encoding="utf-8")
         baseline_train = evaluate(train, actors, skill, agent, root, timeout)
-        baseline_holdout = evaluate(holdout, actors, skill, agent, root, timeout)
+        baseline_validation = evaluate(validation, actors, skill, agent, root, timeout)
         proposer = actors[round_index % len(actors)]
         proposal = call(proposer["command"], {
             "action": "propose", "actor": proposer["id"],
@@ -188,19 +201,19 @@ def run(root: Path, rounds: int) -> list[dict]:
         if target == "skill" and new_agent != agent or target == "agent" and new_skill != skill:
             raise ValueError("Proposal target does not match changed instruction file")
         candidate_train = evaluate(train, actors, new_skill, new_agent, root, timeout)
-        candidate_holdout = evaluate(holdout, actors, new_skill, new_agent, root, timeout)
-        needs_review = any(review["status"] == "uncertain" for record in candidate_train + candidate_holdout
+        candidate_validation = evaluate(validation, actors, new_skill, new_agent, root, timeout)
+        needs_review = any(review["status"] == "uncertain" for record in candidate_train + candidate_validation
                            for review in record["reviews"])
         train_gain = score(candidate_train) > score(baseline_train)
-        no_holdout_regression = score(candidate_holdout) >= score(baseline_holdout) and all(
-            not old["passed"] or new["passed"] for old, new in zip(baseline_holdout, candidate_holdout))
-        promoted = (new_skill != skill or new_agent != agent) and train_gain and no_holdout_regression and not needs_review
+        no_validation_regression = score(candidate_validation) >= score(baseline_validation) and all(
+            not old["passed"] or new["passed"] for old, new in zip(baseline_validation, candidate_validation))
+        promoted = (new_skill != skill or new_agent != agent) and train_gain and no_validation_regression and not needs_review
         summary = {
             "round": round_index + 1, "from": current, "promoted": promoted,
             "target": target,
             "needs_review": needs_review,
             "train_before": score(baseline_train), "train_after": score(candidate_train),
-            "holdout_before": score(baseline_holdout), "holdout_after": score(candidate_holdout),
+            "validation_before": score(baseline_validation), "validation_after": score(candidate_validation),
             "failure_cards": failure_cards(baseline_train),
         }
         if promoted:
@@ -223,13 +236,50 @@ def run(root: Path, rounds: int) -> list[dict]:
     return history
 
 
+def final_test(root: Path, dataset: Path) -> dict:
+    root, dataset = root.resolve(), dataset.resolve()
+    if dataset == root or root in dataset.parents:
+        raise ValueError("Final test dataset must be outside the repository")
+    result_path = root / "final_test_result.json"
+    if result_path.exists():
+        raise FileExistsError("Final test already ran here; use a fresh sealed set for another release")
+    config = read_json(root / "protocol.json")
+    test_cases = load_cases(dataset)
+    development_ids = {case["id"] for split in ("train", "validation")
+                       for case in load_cases(root / config[split])}
+    if development_ids & {case["id"] for case in test_cases}:
+        raise ValueError("Final test case IDs overlap development cases")
+    actors = config["actors"]
+    if len(actors) < 3 or len({a["id"] for a in actors}) != len(actors):
+        raise ValueError("At least three uniquely named actors are required")
+    timeout = int(config.get("timeout_seconds", 30))
+    if timeout < 1 or timeout > 300:
+        raise ValueError("Timeout must be 1–300 seconds")
+    if config.get("calibration"):
+        calibrate(actors, load_cases(root / config["calibration"]), root, timeout)
+    version = read_json(root / "current.json")["version"]
+    version_dir = root / "versions" / version
+    records = evaluate(test_cases, actors,
+                       (version_dir / "skill.md").read_text(encoding="utf-8"),
+                       (version_dir / "agent.md").read_text(encoding="utf-8"), root, timeout)
+    result = {"version": version, "dataset_sha256": hashlib.sha256(dataset.read_bytes()).hexdigest(),
+              "cases": len(test_cases), "vote_score": score(records),
+              "passed_cases": sum(record["passed"] for record in records), "case_runs": len(records),
+              "needs_review": any(review["status"] == "uncertain" for record in records
+                                  for review in record["reviews"])}
+    write_json_atomic(result_path, result)
+    return result
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--rounds", type=int, default=1)
+    parser.add_argument("--final-test", type=Path, help="Run the selected version once on an external test set")
     args = parser.parse_args()
     try:
-        print(json.dumps(run(args.root.resolve(), args.rounds), ensure_ascii=False, indent=2))
+        result = final_test(args.root, args.final_test) if args.final_test else run(args.root.resolve(), args.rounds)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     except (OSError, ValueError, KeyError, TypeError, subprocess.TimeoutExpired, RuntimeError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

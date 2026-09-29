@@ -12,6 +12,8 @@
 python3 macv.py --rounds 2
 python3 -m unittest discover -s tests -v
 python3 compare_judges.py
+# 选定版本后，用仓库外的测试文件运行一次
+python3 macv.py --final-test /absolute/path/to/sealed.jsonl
 ```
 
 第一次运行会从 `versions/0000` 生成两个新版本：第一轮修改 `skill.md`，第二轮修改 `agent.md`。结果写入 `last_run.json`，当前版本记在 `current.json`。如需从头再试，把 `current.json` 改回 `0000`，删除 `versions/0001` 和 `versions/0002`。
@@ -20,11 +22,26 @@ python3 compare_judges.py
 
 `protocol.json` 至少配置三个 Agent。每个任务轮流由其中一个生成答案，其余 Agent 评审。评审时提供任务、评分标准、答案和相关证据，不提供生成者身份或生成指令。运行前会用已知通过和失败的答案检查评审流程。
 
-证据放在样例的 `evidence` 字段，目前只用到相关规则 `policy` 和工具结果 `tool_results`。如果评审识别出答案声称“链接已发送”，代码会核对是否有 `send_reset_link` 的成功结果。没有结果就判失败。工具结果必须由可信的执行环境记录；让被评估的 Agent 自己填写结果，无法防止它伪造证据。
+证据放在样例的 `evidence` 字段，包括相关规则 `policy`、运行编号 `run_id` 和工具结果 `tool_results`。如果评审识别出答案声称“链接已发送”，代码会检查成功结果的运行编号、调用编号、操作、对象和目标是否都匹配。只找到同名工具调用也不算完成。工具结果必须由可信的执行环境记录；让被评估的 Agent 自己填写结果，无法防止它伪造证据。
 
-修订者只收到训练任务的失败摘要：任务编号、答案和评审理由。每轮只能修改 `skill.md` 或 `agent.md` 中的一份，以便判断是哪项改动起了作用。候选版本必须在训练任务上取得更高的评审通过比例；保留任务的通过比例不能下降，原本获得全部评审通过的任务也不能变为失败。未达到条件时不更新当前版本。
+```json
+{
+  "rubric": {"actions": {"send_reset_link": {
+    "description": "send a reset link", "name": "send_reset_link",
+    "subject": "account:self", "target": "email:on_file"
+  }}},
+  "evidence": {"run_id": "run-123", "tool_results": [{
+    "run_id": "run-123", "call_id": "call-456", "name": "send_reset_link",
+    "subject": "account:self", "target": "email:on_file", "status": "success"
+  }]}
+}
+```
 
-这里的分数按每一张评审票计算，所以有部分改善时可以继续下一轮；单个任务只有获得全部评审通过才算通过。评审返回 `uncertain` 时不自动更新版本。保留任务不会传给修订者。
+修订者只收到训练任务的失败摘要：任务编号、答案和评审理由。每轮只能修改 `skill.md` 或 `agent.md` 中的一份，以便判断是哪项改动起了作用。候选版本必须在训练任务上取得更高的评审通过比例；开发期验证任务的通过比例不能下降，原本获得全部评审通过的任务也不能变为失败。未达到条件时不更新当前版本。
+
+这里的分数按每一张评审票计算，所以有部分改善时可以继续下一轮；单个任务只有获得全部评审通过才算通过。评审返回 `uncertain` 时不自动更新版本。验证任务不会传给修订者。
+
+定版后再准备一份独立 JSONL 测试集，放在仓库外，执行 `--final-test`。运行器要求测试编号与训练、验证编号互不重叠，只评估当前版本，不生成修订建议，并把版本、数据文件 SHA-256 和汇总分数写入忽略提交的 `final_test_result.json`。同一工作目录只能运行一次最终测试；要评估新版本，应另建干净工作目录和新测试集。测试集的保密仍依赖外部权限控制：本项目启动的命令并未受到文件系统隔离。
 
 ## 接入自己的 Agent
 
@@ -38,7 +55,7 @@ python3 compare_judges.py
 
 `propose` 必须返回两份完整指令，并且只改动 `target` 指定的一份。模型密钥由你自己的命令进程读取，不要写进仓库文件。
 
-可以单独给某个 Agent 配置 `review_command`，把评审交给别的程序；生成与修订仍用 `command`。`rubric.actions` 列出要检查的操作名称及描述，评审命令用 `claimed_actions` 返回答案声称已经完成的操作。运行器只接受 `pass`、`fail`、`uncertain` 三种状态。旧式的 `{"passed": true, "reason": "..."}` 仍可用，但定义了 `rubric.actions` 时必须补上 `claimed_actions`。
+可以单独给某个 Agent 配置 `review_command`，把评审交给别的程序；生成与修订仍用 `command`。`rubric.actions` 为每个操作指定描述、工具名、对象和目标，评审命令用 `claimed_actions` 返回答案声称已经完成的操作。运行器只接受 `pass`、`fail`、`uncertain` 三种状态。旧式的 `{"passed": true, "reason": "..."}` 仍可用，但定义了 `rubric.actions` 时必须补上 `claimed_actions`。
 
 可选的 [Jev 评审命令](examples/jev_reviewer.py)用一次请求检查事实依据、是否回应问题，以及各个操作是否被声称已完成。它需要 Python 3.10+、`typesafe-sdk` 和 `TYPESAFE_API_KEY`。安装后，在所需 Agent 的配置中增加：
 
@@ -50,4 +67,4 @@ python3 compare_judges.py
 
 ## 使用范围
 
-运行器信任 `protocol.json` 配置的命令，不隔离进程。Jev 一次返回多个判断，不等于多个独立评审。多个评审如果使用同一个模型和相似提示词，投票可能高度相关。反复试验同一份保留任务也会逐渐泄漏评估信息。接入真实模型时，需要独立的评审配置、受控的保留集，以及对随机输出的重复采样。
+运行器信任 `protocol.json` 配置的命令，不隔离进程。Jev 一次返回多个判断，不等于多个独立评审。多个评审如果使用同一个模型和相似提示词，投票可能高度相关。反复试验同一份验证任务也会逐渐泄漏评估信息。接入真实模型时，需要独立的评审配置、受控的最终测试集，以及对随机输出的重复采样。

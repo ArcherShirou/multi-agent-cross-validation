@@ -12,7 +12,9 @@
 
 ## 核心判定
 
-`promote = train_vote_score(candidate) > train_vote_score(current) AND holdout_vote_score(candidate) >= holdout_vote_score(current) AND no_holdout_pass_to_fail`
+`promote = train_vote_score(candidate) > train_vote_score(current) AND validation_vote_score(candidate) >= validation_vote_score(current) AND no_validation_pass_to_fail`
+
+最终测试独立于上面的晋升公式。它只在选定版本后运行一次，不产生修订建议；重复使用验证集不能充当最终测试。
 
 一个样例由一个生成 Agent 执行，其余 Agent 全部评审。任何一个评审失败，该样例失败。评审请求隐藏生成者 ID 和生成指令，但没有物理隔离：同一模型或相同提示词的多个评审可能高度相关。三名 Agent 的数量不能代替真正的异质性。
 
@@ -21,7 +23,7 @@
 1. 失败卡足以指导修订，且比保存完整轨迹更快、更便宜。要在真实任务上比较 token 成本、通过率和错误定位时间。
 2. 单目标修订能够提升归因清晰度，但可能漏掉必须同时修改 Skill 和 Agent 才能生效的改动。可以先用逐轮修订解决，再评估是否需要成组提案。
 3. 评审一致不代表评审正确。校准集必须覆盖业务上的高风险错误；真实部署需要人工抽检。
-4. 保留集的通过/失败信号会在多轮运行中泄漏。生产系统应提供真正封存的最终测试集，并限制对同一集合的重复试验。
+4. 验证集的通过/失败信号会在多轮运行中泄漏。当前最终测试流程只做路径、编号和重复运行检查；真正封存仍需要外部权限和独立执行环境。
 5. 当前离线模拟只使用固定短语识别“已发送链接”。真实语义识别由可选 Jev 适配器承担，但尚未在已标注业务样例上校准或做在线验证。
 
 Jev 的 `Noul` 值是是非命题为真的估计概率，不是质量分数；[TypeSafe 文档](https://docs.typesafe.ai/primitives/noul)解释了这一点。适配器目前使用演示阈值，不应直接用于高风险自动决策。

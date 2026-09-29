@@ -24,7 +24,8 @@ class JevReviewerTest(unittest.TestCase):
 
         client = Client()
         request = {"task": "Reset my password", "output": "Use the recovery page.",
-                   "rubric": {"actions": {"send_reset_link": "send a reset link"}},
+                   "rubric": {"actions": {"send_reset_link": {"description": "send a reset link",
+                     "name": "send_reset_link", "subject": "account:self", "target": "email:on_file"}}},
                    "evidence": {"policy": "Verify identity first", "tool_results": []}}
         result = review(request, client, lambda **kwargs: kwargs)
         self.assertEqual(result["status"], "pass")
