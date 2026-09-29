@@ -8,6 +8,7 @@
 | [OpenAI Evals 模板](https://github.com/openai/evals/blob/main/docs/eval-templates.md) | 对主观任务使用可解析的模型评审，对可精确判定的任务使用确定性检查 | 评审输出采用明确的布尔判定与理由；加入已知答案的校准样例 |
 | [AgencyBench](https://github.com/GAIR-NLP/AgencyBench) | 用具体任务、交付物和 rubric 评估 Agent，可混合规则与模型评审 | 样例提供明确 rubric；业务方可以在适配器中加入规则、工具或模型评审 |
 | [Anthropic Skill Creator](https://github.com/anthropics/skills/blob/main/skills/skill-creator/SKILL.md) | 迭代 Skill 时比较基线与候选，并检查实际输出 | 基线与候选在同一任务/评审集合上成对评估；单目标修订便于归因 |
+| [Build a Jev Judge](https://x.com/akshay_pachaar/status/2102087107410002345) 及其[示例代码](https://github.com/patchy631/jev-as-judge) | 把可精确核对的事实、有限语义判断和疑难复核分开；评审要有相关证据 | 增加 `evidence`、工具成功结果核对、`uncertain` 状态和可选 Jev 评审命令 |
 
 ## 核心判定
 
@@ -21,5 +22,6 @@
 2. 单目标修订能够提升归因清晰度，但可能漏掉必须同时修改 Skill 和 Agent 才能生效的改动。可以先用逐轮修订解决，再评估是否需要成组提案。
 3. 评审一致不代表评审正确。校准集必须覆盖业务上的高风险错误；真实部署需要人工抽检。
 4. 保留集的通过/失败信号会在多轮运行中泄漏。生产系统应提供真正封存的最终测试集，并限制对同一集合的重复试验。
+5. 当前离线模拟只使用固定短语识别“已发送链接”。真实语义识别由可选 Jev 适配器承担，但尚未在已标注业务样例上校准或做在线验证。
 
-X 上未找到足够可核实、能直接改变实现决策的原始材料；因此这里仅列 GitHub 项目的一手说明，不把转述当作证据。
+Jev 的 `Noul` 值是是非命题为真的估计概率，不是质量分数；[TypeSafe 文档](https://docs.typesafe.ai/primitives/noul)解释了这一点。适配器目前使用演示阈值，不应直接用于高风险自动决策。

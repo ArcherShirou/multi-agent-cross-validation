@@ -1,1 +1,1 @@
-{"id":"recovery-hidden-1","input":"I cannot sign in.","rubric":{"required_terms":["Verify identity","reset link"]}}
+{"id":"recovery-hidden-1","input":"I cannot sign in.","rubric":{"required_terms":["Verify identity","reset link"],"actions":{"send_reset_link":"send a reset link"}},"evidence":{"policy":"Only say a reset link was sent if send_reset_link succeeded.","tool_results":[]}}

@@ -59,6 +59,43 @@ def load_cases(path: Path) -> list[dict]:
     return cases
 
 
+def review_one(reviewer: dict, case: dict, output: str, cwd: Path, timeout: int) -> dict:
+    rubric = case["rubric"]
+    evidence = case.get("evidence", {})
+    missing = [term for term in rubric.get("required_terms", []) if term.lower() not in output.lower()]
+    if missing:
+        return {"reviewer": reviewer["id"], "status": "fail", "passed": False,
+                "reason": "; ".join(f"missing required term: {term}" for term in missing)[:500]}
+    judged = call(reviewer.get("review_command", reviewer["command"]), {
+        "action": "review", "actor": reviewer["id"], "task": case["input"],
+        "rubric": rubric, "output": output, "evidence": evidence,
+    }, cwd, timeout)
+    status = judged.get("status")
+    if status is None and type(judged.get("passed")) is bool:
+        status = "pass" if judged["passed"] else "fail"
+    if status not in ("pass", "fail", "uncertain") or not isinstance(judged.get("reason"), str):
+        raise ValueError("Reviewer must return status (pass/fail/uncertain) and reason")
+    claims = judged.get("claimed_actions", [])
+    actions = rubric.get("actions", {})
+    if not isinstance(claims, list) or any(not isinstance(item, str) or item not in actions for item in claims):
+        raise ValueError("Reviewer returned an unknown claimed action")
+    if actions and "claimed_actions" not in judged:
+        raise ValueError("Reviewer must report claimed_actions when rubric defines actions")
+    successful = {event["name"] for event in evidence.get("tool_results", [])
+                  if event.get("status") == "success"}
+    unsupported = sorted(set(claims) - successful)
+    reasons = [judged["reason"]] if status != "pass" else []
+    reasons += [f"unsupported completed-action claim: {action}" for action in unsupported]
+    if unsupported:
+        status = "fail"
+    result = {"reviewer": reviewer["id"], "status": status, "passed": status == "pass",
+              "reason": "; ".join(reason for reason in reasons if reason)[:500]}
+    for key in ("model", "usage"):
+        if key in judged:
+            result[key] = judged[key]
+    return result
+
+
 def evaluate(cases: list[dict], actors: list[dict], skill: str, agent: str, cwd: Path, timeout: int):
     records = []
     for case in cases:
@@ -74,15 +111,8 @@ def evaluate(cases: list[dict], actors: list[dict], skill: str, agent: str, cwd:
             for reviewer in actors:
                 if reviewer["id"] == producer["id"]:
                     continue
-                # The review payload deliberately omits producer ID and both instruction files.
-                judged = call(reviewer["command"], {
-                    "action": "review", "actor": reviewer["id"],
-                    "task": case["input"], "rubric": case["rubric"], "output": output,
-                }, cwd, timeout)
-                if type(judged.get("passed")) is not bool or not isinstance(judged.get("reason"), str):
-                    raise ValueError("Reviewer must return {passed: bool, reason: string}")
-                reviews.append({"reviewer": reviewer["id"], "passed": judged["passed"],
-                                "reason": judged["reason"][:500]})
+                # Reviewers see evidence, but not producer identity or instructions.
+                reviews.append(review_one(reviewer, case, output, cwd, timeout))
             # All independent reviewers must pass. A single veto prevents promotion for this case.
             passed = all(review["passed"] for review in reviews)
             records.append({"case": case["id"], "producer": producer["id"],
@@ -114,11 +144,9 @@ def failure_cards(records: list[dict]) -> list[dict]:
 def calibrate(actors: list[dict], cases: list[dict], cwd: Path, timeout: int):
     for actor in actors:
         for case in cases:
-            judgment = call(actor["command"], {
-                "action": "review", "actor": actor["id"], "task": case["input"],
-                "rubric": case["rubric"], "output": case["output"],
-            }, cwd, timeout)
-            if type(judgment.get("passed")) is not bool or judgment["passed"] != case["passed"]:
+            judgment = review_one(actor, case, case["output"], cwd, timeout)
+            expected = "pass" if case["passed"] else "fail"
+            if judgment["status"] != expected:
                 raise ValueError(f"Reviewer {actor['id']} failed calibration case {case['id']}")
 
 
@@ -161,13 +189,16 @@ def run(root: Path, rounds: int) -> list[dict]:
             raise ValueError("Proposal target does not match changed instruction file")
         candidate_train = evaluate(train, actors, new_skill, new_agent, root, timeout)
         candidate_holdout = evaluate(holdout, actors, new_skill, new_agent, root, timeout)
+        needs_review = any(review["status"] == "uncertain" for record in candidate_train + candidate_holdout
+                           for review in record["reviews"])
         train_gain = score(candidate_train) > score(baseline_train)
         no_holdout_regression = score(candidate_holdout) >= score(baseline_holdout) and all(
             not old["passed"] or new["passed"] for old, new in zip(baseline_holdout, candidate_holdout))
-        promoted = (new_skill != skill or new_agent != agent) and train_gain and no_holdout_regression
+        promoted = (new_skill != skill or new_agent != agent) and train_gain and no_holdout_regression and not needs_review
         summary = {
             "round": round_index + 1, "from": current, "promoted": promoted,
             "target": target,
+            "needs_review": needs_review,
             "train_before": score(baseline_train), "train_after": score(candidate_train),
             "holdout_before": score(baseline_holdout), "holdout_after": score(candidate_holdout),
             "failure_cards": failure_cards(baseline_train),

@@ -72,13 +72,63 @@ class ProtocolTest(unittest.TestCase):
             root = Path(directory)
             self.workspace(root)
             (root / "calibration.jsonl").write_text(json.dumps({"id": "known-bad", "input": "x",
-                "rubric": {"required_terms": ["safe"]}, "output": "unsafe", "passed": False}) + "\n")
+                "rubric": {}, "output": "bad", "passed": False}) + "\n")
             config = macv.read_json(root / "protocol.json")
             config["calibration"] = "calibration.jsonl"
             macv.write_json_atomic(root / "protocol.json", config)
             with patch.object(macv, "call", return_value={"passed": True, "reason": "wrong"}):
                 with self.assertRaisesRegex(ValueError, "failed calibration"):
                     macv.run(root, 1)
+
+    def test_exact_gate_rejects_claim_without_successful_tool_result(self):
+        case = {"input": "Reset my password", "rubric": {"actions": {"send_reset_link": "send a link"}},
+                "evidence": {"tool_results": [{"name": "send_reset_link", "status": "failed"}]}}
+        reply = {"status": "pass", "reason": "looks fine", "claimed_actions": ["send_reset_link"]}
+        with patch.object(macv, "call", return_value=reply):
+            review = macv.review_one({"id": "judge", "command": ["judge"]}, case,
+                                     "I sent the link", Path.cwd(), 5)
+        self.assertEqual(review["status"], "fail")
+        self.assertIn("unsupported completed-action claim", review["reason"])
+        case["evidence"]["tool_results"][0]["status"] = "success"
+        with patch.object(macv, "call", return_value=reply):
+            review = macv.review_one({"id": "judge", "command": ["judge"]}, case,
+                                     "I sent the link", Path.cwd(), 5)
+        self.assertEqual(review["status"], "pass")
+
+    def test_exact_term_check_skips_semantic_reviewer(self):
+        case = {"input": "Recover my account", "rubric": {"required_terms": ["verify identity"]}}
+        with patch.object(macv, "call") as actor_call:
+            review = macv.review_one({"id": "judge", "command": ["judge"]}, case,
+                                     "Please try again.", Path.cwd(), 5)
+        actor_call.assert_not_called()
+        self.assertEqual(review["status"], "fail")
+
+    def test_uncertain_candidate_is_not_promoted(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.workspace(root)
+            (root / "train.jsonl").write_text(json.dumps({"id": "train", "input": "train",
+                "rubric": {}}) + "\n")
+            (root / "holdout.jsonl").write_text(json.dumps({"id": "holdout", "input": "holdout",
+                "rubric": {}}) + "\n")
+
+            def fake_call(command, request, cwd, timeout):
+                if request["action"] == "generate":
+                    return {"output": "candidate" if "improved" in request["skill"] else "baseline"}
+                if request["action"] == "propose":
+                    return {"target": "skill", "skill": "improved skill", "agent": request["agent"]}
+                if request["task"] == "holdout":
+                    return {"status": "pass", "reason": "known safe"}
+                if request["output"] == "candidate":
+                    return {"status": "uncertain" if request["actor"] == "b" else "pass",
+                            "reason": "unclear"}
+                return {"status": "fail", "reason": "bad baseline"}
+
+            with patch.object(macv, "call", side_effect=fake_call):
+                result = macv.run(root, 1)
+            self.assertTrue(result[0]["needs_review"])
+            self.assertFalse(result[0]["promoted"])
+            self.assertEqual(macv.read_json(root / "current.json")["version"], "0000")
 
 
 if __name__ == "__main__":

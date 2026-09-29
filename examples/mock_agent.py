@@ -16,7 +16,11 @@ def respond(request):
     if action == "review":
         missing = [term for term in request["rubric"]["required_terms"]
                    if term.lower() not in request["output"].lower()]
-        return {"passed": not missing, "reason": "missing: " + ", ".join(missing) if missing else "meets rubric"}
+        # This phrase match is a fixture, not a general semantic judge.
+        claimed = ["send_reset_link"] if "I have sent a reset link" in request["output"] else []
+        return {"status": "fail" if missing else "pass",
+                "reason": "missing: " + ", ".join(missing) if missing else "meets rubric",
+                "claimed_actions": claimed}
     if action == "propose":
         reasons = " ".join(" ".join(card["reasons"]) for card in request["failures"])
         skill = request["skill"]
